@@ -786,6 +786,15 @@ static int get_register_data(uint8_t *rsp, const uint16_t *mapping, int nb)
     return length;
 }
 
+static int get_register_values(const modbus_t *,
+                               uint8_t *rsp,
+                               const uint16_t *tab_registers,
+                               int address,
+                               int nb)
+{
+    return get_register_data(rsp, &tab_registers[address], nb);
+}
+
 /* Takes the values from the request buffer and put them into the mapping
    buffer.
 
@@ -802,6 +811,15 @@ static int set_register_data(uint16_t *mapping, const uint8_t *req, int nb)
     }
 
     return length;
+}
+
+static int set_register_values(const modbus_t *,
+                               uint16_t *tab_registers,
+                               const uint8_t *req,
+                               int address,
+                               int nb)
+{
+    return set_register_data(&tab_registers[address], req, nb);
 }
 
 /* Send a response to the received request.
@@ -1715,6 +1733,15 @@ int modbus_report_slave_id(modbus_t *ctx, int max_dest, uint8_t *dest)
     return rc;
 }
 
+static void _modbus_init_default_callbacks(modbus_t *ctx)
+{
+    static const modbus_application_callbacks_t callbacks = {
+        get_register_values,
+        set_register_values
+    };
+    modbus_set_register_callbacks(ctx, &callbacks);
+}
+
 void _modbus_init_common(modbus_t *ctx)
 {
     /* Slave and socket are initialized to -1 */
@@ -1733,6 +1760,8 @@ void _modbus_init_common(modbus_t *ctx)
 
     ctx->indication_timeout.tv_sec = 0;
     ctx->indication_timeout.tv_usec = 0;
+
+    _modbus_init_default_callbacks(ctx);
 }
 
 /* Define the slave number */
@@ -1788,6 +1817,12 @@ int modbus_get_socket(modbus_t *ctx)
     }
 
     return ctx->s;
+}
+
+void modbus_set_register_callbacks(modbus_t *ctx,
+                                   const modbus_application_callbacks_t *callbacks)
+{
+    ctx->application_callbacks = callbacks;
 }
 
 /* Get the timeout interval used to wait for a response */
