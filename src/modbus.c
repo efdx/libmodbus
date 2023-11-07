@@ -768,6 +768,42 @@ static int response_exception(modbus_t *ctx,
     return rsp_length;
 }
 
+/* Takes the values from the mapping buffer and put them into the response
+   buffer.
+
+   Returns the amount of bytes written in the response buffer.
+*/
+static int get_register_data(uint8_t *rsp, const uint16_t *mapping, int nb)
+{
+    int i;
+    int length = 0;
+
+    for (i = 0; i < nb; i++) {
+        rsp[length++] = mapping[i] >> 8;
+        rsp[length++] = mapping[i] & 0xFF;
+    }
+
+    return length;
+}
+
+/* Takes the values from the request buffer and put them into the mapping
+   buffer.
+
+   Returns the amount of bytes read from the request buffer.
+*/
+static int set_register_data(uint16_t *mapping, const uint8_t *req, int nb)
+{
+    int i;
+    int length = 0;
+
+    for (i = 0; i < nb; i++) {
+        mapping[i] = (req[length] << 8) + req[length + 1];
+        length += 2;
+    }
+
+    return length;
+}
+
 /* Send a response to the received request.
    Analyses the request and constructs a response.
 
@@ -876,14 +912,12 @@ int modbus_reply(modbus_t *ctx,
                                             mapping_address < 0 ? address : address + nb,
                                             name);
         } else {
-            int i;
 
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             rsp[rsp_length++] = nb << 1;
-            for (i = mapping_address; i < mapping_address + nb; i++) {
-                rsp[rsp_length++] = tab_registers[i] >> 8;
-                rsp[rsp_length++] = tab_registers[i] & 0xFF;
-            }
+            rsp_length += get_register_data(rsp + rsp_length,
+                                        &tab_registers[mapping_address],
+                                        nb);
         }
     } break;
     case MODBUS_FC_WRITE_SINGLE_COIL: {
@@ -930,9 +964,7 @@ int modbus_reply(modbus_t *ctx,
                                    "Illegal data address 0x%0X in write_register\n",
                                    address);
         } else {
-            int data = (req[offset + 3] << 8) + req[offset + 4];
-
-            mb_mapping->tab_registers[mapping_address] = data;
+            set_register_data(&mb_mapping->tab_registers[mapping_address], &req[offset + 3], 1);
             memcpy(rsp, req, req_length);
             rsp_length = req_length;
         }
@@ -1000,12 +1032,7 @@ int modbus_reply(modbus_t *ctx,
                                    "Illegal data address 0x%0X in write_registers\n",
                                    mapping_address < 0 ? address : address + nb);
         } else {
-            int i, j;
-            for (i = mapping_address, j = 6; i < mapping_address + nb; i++, j += 2) {
-                /* 6 and 7 = first value */
-                mb_mapping->tab_registers[i] =
-                    (req[offset + j] << 8) + req[offset + j + 1];
-            }
+            set_register_data(&mb_mapping->tab_registers[mapping_address], &req[offset + 6], nb);
 
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             /* 4 to copy the address (2) and the no. of registers */
@@ -1096,23 +1123,16 @@ int modbus_reply(modbus_t *ctx,
                 mapping_address < 0 ? address : address + nb,
                 mapping_address_write < 0 ? address_write : address_write + nb_write);
         } else {
-            int i, j;
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             rsp[rsp_length++] = nb << 1;
 
-            /* Write first.
-               10 and 11 are the offset of the first values to write */
-            for (i = mapping_address_write, j = 10; i < mapping_address_write + nb_write;
-                 i++, j += 2) {
-                mb_mapping->tab_registers[i] =
-                    (req[offset + j] << 8) + req[offset + j + 1];
-            }
+            set_register_data(&mb_mapping->tab_registers[mapping_address_write],
+                          &req[offset + 10],
+                          nb_write);
 
-            /* and read the data for the response */
-            for (i = mapping_address; i < mapping_address + nb; i++) {
-                rsp[rsp_length++] = mb_mapping->tab_registers[i] >> 8;
-                rsp[rsp_length++] = mb_mapping->tab_registers[i] & 0xFF;
-            }
+            rsp_length += get_register_data(rsp + rsp_length,
+                                        &mb_mapping->tab_registers[mapping_address],
+                                        nb);
         }
     } break;
 
