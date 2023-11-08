@@ -930,12 +930,14 @@ int modbus_reply(modbus_t *ctx,
                                             mapping_address < 0 ? address : address + nb,
                                             name);
         } else {
-
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             rsp[rsp_length++] = nb << 1;
-            rsp_length += get_register_data(rsp + rsp_length,
-                                        &tab_registers[mapping_address],
-                                        nb);
+            rsp_length += ctx->application_callbacks->registers_read_cb(
+                ctx,
+                rsp + rsp_length,
+                tab_registers,
+                mapping_address,
+                nb);
         }
     } break;
     case MODBUS_FC_WRITE_SINGLE_COIL: {
@@ -982,7 +984,13 @@ int modbus_reply(modbus_t *ctx,
                                    "Illegal data address 0x%0X in write_register\n",
                                    address);
         } else {
-            set_register_data(&mb_mapping->tab_registers[mapping_address], &req[offset + 3], 1);
+            ctx->application_callbacks->registers_write_cb(
+                ctx,
+                mb_mapping->tab_registers,
+                &req[offset + 3],
+                mapping_address,
+                1);
+
             memcpy(rsp, req, req_length);
             rsp_length = req_length;
         }
@@ -1050,7 +1058,12 @@ int modbus_reply(modbus_t *ctx,
                                    "Illegal data address 0x%0X in write_registers\n",
                                    mapping_address < 0 ? address : address + nb);
         } else {
-            set_register_data(&mb_mapping->tab_registers[mapping_address], &req[offset + 6], nb);
+            ctx->application_callbacks->registers_write_cb(
+                ctx,
+                mb_mapping->tab_registers,
+                &req[offset + 6],
+                mapping_address,
+                nb);
 
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             /* 4 to copy the address (2) and the no. of registers */
@@ -1144,13 +1157,19 @@ int modbus_reply(modbus_t *ctx,
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             rsp[rsp_length++] = nb << 1;
 
-            set_register_data(&mb_mapping->tab_registers[mapping_address_write],
-                          &req[offset + 10],
-                          nb_write);
+            ctx->application_callbacks->registers_write_cb(
+                ctx,
+                mb_mapping->tab_registers,
+                &req[offset + 10],
+                mapping_address_write,
+                nb_write);
 
-            rsp_length += get_register_data(rsp + rsp_length,
-                                        &mb_mapping->tab_registers[mapping_address],
-                                        nb);
+            rsp_length += ctx->application_callbacks->registers_read_cb(
+                ctx,
+                rsp + rsp_length,
+                mb_mapping->tab_registers,
+                mapping_address,
+                nb);
         }
     } break;
 
