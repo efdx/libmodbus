@@ -270,6 +270,16 @@ MODBUS_API int modbus_write_and_read_registers(modbus_t *ctx,
 MODBUS_API int modbus_report_slave_id(modbus_t *ctx, int max_dest, uint8_t *dest);
 
 MODBUS_API modbus_mapping_t *
+modbus_mapping_new_address_only(unsigned int start_bits,
+                                unsigned int nb_bits,
+                                unsigned int start_input_bits,
+                                unsigned int nb_input_bits,
+                                unsigned int start_registers,
+                                unsigned int nb_registers,
+                                unsigned int start_input_registers,
+                                unsigned int nb_input_registers);
+
+MODBUS_API modbus_mapping_t *
 modbus_mapping_new_start_address(unsigned int start_bits,
                                  unsigned int nb_bits,
                                  unsigned int start_input_bits,
