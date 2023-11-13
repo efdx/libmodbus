@@ -171,6 +171,34 @@ typedef struct _modbus_mapping_t {
     uint16_t *tab_registers;
 } modbus_mapping_t;
 
+typedef struct _modbus_application_callbacks_t {
+    /* Callback to read nb amount of registers from address
+
+       Expects the definition to fill the array with the number of values
+       requested. The limits, based on setting up mapping, will be pre-checked
+       by the library. The address is the pre-calculated offset from the start
+       of the mapping
+    */
+    int (*registers_read_cb)(const modbus_t *ctx,
+                             uint8_t *rsp,
+                             const uint16_t *tab_registers,
+                             int address,
+                             int nb);
+
+    /* Callback to write nb amount of registers on address
+
+       Expects the definition to fill the mapping with the data provided in
+       rsp_data. The limits, based on setting up mapping, will be pre-checked
+       by the library. The address is the pre-calculated offset from the start
+       of the mapping
+    */
+    int (*registers_write_cb)(const modbus_t *ctx,
+                              uint16_t *tab_registers,
+                              const uint8_t *req,
+                              int address,
+                              int nb);
+} modbus_application_callbacks_t;
+
 typedef enum {
     MODBUS_ERROR_RECOVERY_NONE = 0,
     MODBUS_ERROR_RECOVERY_LINK = (1 << 1),
@@ -190,6 +218,9 @@ MODBUS_API int modbus_set_error_recovery(modbus_t *ctx,
                                          modbus_error_recovery_mode error_recovery);
 MODBUS_API int modbus_set_socket(modbus_t *ctx, int s);
 MODBUS_API int modbus_get_socket(modbus_t *ctx);
+
+MODBUS_API void modbus_set_register_callbacks(modbus_t *ctx,
+                                              const modbus_application_callbacks_t *callbacks);
 
 MODBUS_API int
 modbus_get_response_timeout(modbus_t *ctx, uint32_t *to_sec, uint32_t *to_usec);
@@ -237,6 +268,16 @@ MODBUS_API int modbus_write_and_read_registers(modbus_t *ctx,
                                                int read_nb,
                                                uint16_t *dest);
 MODBUS_API int modbus_report_slave_id(modbus_t *ctx, int max_dest, uint8_t *dest);
+
+MODBUS_API modbus_mapping_t *
+modbus_mapping_new_address_only(unsigned int start_bits,
+                                unsigned int nb_bits,
+                                unsigned int start_input_bits,
+                                unsigned int nb_input_bits,
+                                unsigned int start_registers,
+                                unsigned int nb_registers,
+                                unsigned int start_input_registers,
+                                unsigned int nb_input_registers);
 
 MODBUS_API modbus_mapping_t *
 modbus_mapping_new_start_address(unsigned int start_bits,

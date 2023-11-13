@@ -768,6 +768,60 @@ static int response_exception(modbus_t *ctx,
     return rsp_length;
 }
 
+/* Takes the values from the mapping buffer and put them into the response
+   buffer.
+
+   Returns the amount of bytes written in the response buffer.
+*/
+static int get_register_data(uint8_t *rsp, const uint16_t *mapping, int nb)
+{
+    int i;
+    int length = 0;
+
+    for (i = 0; i < nb; i++) {
+        rsp[length++] = mapping[i] >> 8;
+        rsp[length++] = mapping[i] & 0xFF;
+    }
+
+    return length;
+}
+
+static int get_register_values(const modbus_t *,
+                               uint8_t *rsp,
+                               const uint16_t *tab_registers,
+                               int address,
+                               int nb)
+{
+    return get_register_data(rsp, &tab_registers[address], nb);
+}
+
+/* Takes the values from the request buffer and put them into the mapping
+   buffer.
+
+   Returns the amount of bytes read from the request buffer.
+*/
+static int set_register_data(uint16_t *mapping, const uint8_t *req, int nb)
+{
+    int i;
+    int length = 0;
+
+    for (i = 0; i < nb; i++) {
+        mapping[i] = (req[length] << 8) + req[length + 1];
+        length += 2;
+    }
+
+    return length;
+}
+
+static int set_register_values(const modbus_t *,
+                               uint16_t *tab_registers,
+                               const uint8_t *req,
+                               int address,
+                               int nb)
+{
+    return set_register_data(&tab_registers[address], req, nb);
+}
+
 /* Send a response to the received request.
    Analyses the request and constructs a response.
 
@@ -876,14 +930,14 @@ int modbus_reply(modbus_t *ctx,
                                             mapping_address < 0 ? address : address + nb,
                                             name);
         } else {
-            int i;
-
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             rsp[rsp_length++] = nb << 1;
-            for (i = mapping_address; i < mapping_address + nb; i++) {
-                rsp[rsp_length++] = tab_registers[i] >> 8;
-                rsp[rsp_length++] = tab_registers[i] & 0xFF;
-            }
+            rsp_length += ctx->application_callbacks->registers_read_cb(
+                ctx,
+                rsp + rsp_length,
+                tab_registers,
+                mapping_address,
+                nb);
         }
     } break;
     case MODBUS_FC_WRITE_SINGLE_COIL: {
@@ -930,9 +984,13 @@ int modbus_reply(modbus_t *ctx,
                                    "Illegal data address 0x%0X in write_register\n",
                                    address);
         } else {
-            int data = (req[offset + 3] << 8) + req[offset + 4];
+            ctx->application_callbacks->registers_write_cb(
+                ctx,
+                mb_mapping->tab_registers,
+                &req[offset + 3],
+                mapping_address,
+                1);
 
-            mb_mapping->tab_registers[mapping_address] = data;
             memcpy(rsp, req, req_length);
             rsp_length = req_length;
         }
@@ -1000,12 +1058,12 @@ int modbus_reply(modbus_t *ctx,
                                    "Illegal data address 0x%0X in write_registers\n",
                                    mapping_address < 0 ? address : address + nb);
         } else {
-            int i, j;
-            for (i = mapping_address, j = 6; i < mapping_address + nb; i++, j += 2) {
-                /* 6 and 7 = first value */
-                mb_mapping->tab_registers[i] =
-                    (req[offset + j] << 8) + req[offset + j + 1];
-            }
+            ctx->application_callbacks->registers_write_cb(
+                ctx,
+                mb_mapping->tab_registers,
+                &req[offset + 6],
+                mapping_address,
+                nb);
 
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             /* 4 to copy the address (2) and the no. of registers */
@@ -1096,23 +1154,22 @@ int modbus_reply(modbus_t *ctx,
                 mapping_address < 0 ? address : address + nb,
                 mapping_address_write < 0 ? address_write : address_write + nb_write);
         } else {
-            int i, j;
             rsp_length = ctx->backend->build_response_basis(&sft, rsp);
             rsp[rsp_length++] = nb << 1;
 
-            /* Write first.
-               10 and 11 are the offset of the first values to write */
-            for (i = mapping_address_write, j = 10; i < mapping_address_write + nb_write;
-                 i++, j += 2) {
-                mb_mapping->tab_registers[i] =
-                    (req[offset + j] << 8) + req[offset + j + 1];
-            }
+            ctx->application_callbacks->registers_write_cb(
+                ctx,
+                mb_mapping->tab_registers,
+                &req[offset + 10],
+                mapping_address_write,
+                nb_write);
 
-            /* and read the data for the response */
-            for (i = mapping_address; i < mapping_address + nb; i++) {
-                rsp[rsp_length++] = mb_mapping->tab_registers[i] >> 8;
-                rsp[rsp_length++] = mb_mapping->tab_registers[i] & 0xFF;
-            }
+            rsp_length += ctx->application_callbacks->registers_read_cb(
+                ctx,
+                rsp + rsp_length,
+                mb_mapping->tab_registers,
+                mapping_address,
+                nb);
         }
     } break;
 
@@ -1695,6 +1752,15 @@ int modbus_report_slave_id(modbus_t *ctx, int max_dest, uint8_t *dest)
     return rc;
 }
 
+static void _modbus_init_default_callbacks(modbus_t *ctx)
+{
+    static const modbus_application_callbacks_t callbacks = {
+        get_register_values,
+        set_register_values
+    };
+    modbus_set_register_callbacks(ctx, &callbacks);
+}
+
 void _modbus_init_common(modbus_t *ctx)
 {
     /* Slave and socket are initialized to -1 */
@@ -1713,6 +1779,8 @@ void _modbus_init_common(modbus_t *ctx)
 
     ctx->indication_timeout.tv_sec = 0;
     ctx->indication_timeout.tv_usec = 0;
+
+    _modbus_init_default_callbacks(ctx);
 }
 
 /* Define the slave number */
@@ -1768,6 +1836,12 @@ int modbus_get_socket(modbus_t *ctx)
     }
 
     return ctx->s;
+}
+
+void modbus_set_register_callbacks(modbus_t *ctx,
+                                   const modbus_application_callbacks_t *callbacks)
+{
+    ctx->application_callbacks = callbacks;
 }
 
 /* Get the timeout interval used to wait for a response */
@@ -1918,6 +1992,47 @@ int modbus_set_debug(modbus_t *ctx, int flag)
     return 0;
 }
 
+/* Sets up the boundaries for all registers, without allocating memory for the
+   data.
+
+   Usable for setting the boundaries, but it will require either the allocation
+   of the using modbus_mapping_new_start_address(). That or the use of implementation
+   specific callbacks to manage the data.
+
+   Returns NULL if memory allocation failed.
+*/
+modbus_mapping_t *modbus_mapping_new_address_only(unsigned int start_bits,
+                                                   unsigned int nb_bits,
+                                                   unsigned int start_input_bits,
+                                                   unsigned int nb_input_bits,
+                                                   unsigned int start_registers,
+                                                   unsigned int nb_registers,
+                                                   unsigned int start_input_registers,
+                                                   unsigned int nb_input_registers)
+{
+    modbus_mapping_t *mb_mapping;
+
+    mb_mapping = (modbus_mapping_t *) malloc(sizeof(modbus_mapping_t));
+    if (mb_mapping == NULL) {
+        return NULL;
+    }
+    mb_mapping->nb_bits = nb_bits;
+    mb_mapping->start_bits = start_bits;
+    mb_mapping->nb_input_bits = nb_input_bits;
+    mb_mapping->start_input_bits = start_input_bits;
+    mb_mapping->nb_registers = nb_registers;
+    mb_mapping->start_registers = start_registers;
+    mb_mapping->nb_input_registers = nb_input_registers;
+    mb_mapping->start_input_registers = start_input_registers;
+
+    mb_mapping->tab_bits = NULL;
+    mb_mapping->tab_input_bits = NULL;
+    mb_mapping->tab_registers = NULL;
+    mb_mapping->tab_input_registers = NULL;
+
+    return mb_mapping;
+}
+
 /* Allocates 4 arrays to store bits, input bits, registers and inputs
    registers. The pointers are stored in modbus_mapping structure.
 
@@ -1933,75 +2048,60 @@ modbus_mapping_t *modbus_mapping_new_start_address(unsigned int start_bits,
                                                    unsigned int start_input_registers,
                                                    unsigned int nb_input_registers)
 {
-    modbus_mapping_t *mb_mapping;
+    modbus_mapping_t *mb_mapping = modbus_mapping_new_address_only(
+        start_bits,
+        nb_bits,
+        start_input_bits,
+        nb_input_bits,
+        start_registers,
+        nb_registers,
+        start_input_registers,
+        nb_input_registers
+    );
 
-    mb_mapping = (modbus_mapping_t *) malloc(sizeof(modbus_mapping_t));
     if (mb_mapping == NULL) {
         return NULL;
     }
-
     /* 0X */
-    mb_mapping->nb_bits = nb_bits;
-    mb_mapping->start_bits = start_bits;
-    if (nb_bits == 0) {
-        mb_mapping->tab_bits = NULL;
-    } else {
+    if (mb_mapping->nb_bits > 0) {
         /* Negative number raises a POSIX error */
-        mb_mapping->tab_bits = (uint8_t *) malloc(nb_bits * sizeof(uint8_t));
+        mb_mapping->tab_bits = (uint8_t *) malloc(mb_mapping->nb_bits * sizeof(uint8_t));
         if (mb_mapping->tab_bits == NULL) {
-            free(mb_mapping);
+            modbus_mapping_free(mb_mapping);
             return NULL;
         }
-        memset(mb_mapping->tab_bits, 0, nb_bits * sizeof(uint8_t));
+        memset(mb_mapping->tab_bits, 0, mb_mapping->nb_bits * sizeof(uint8_t));
     }
 
     /* 1X */
-    mb_mapping->nb_input_bits = nb_input_bits;
-    mb_mapping->start_input_bits = start_input_bits;
-    if (nb_input_bits == 0) {
-        mb_mapping->tab_input_bits = NULL;
-    } else {
-        mb_mapping->tab_input_bits = (uint8_t *) malloc(nb_input_bits * sizeof(uint8_t));
+    if (mb_mapping->nb_input_bits > 0) {
+        mb_mapping->tab_input_bits = (uint8_t *) malloc(mb_mapping->nb_input_bits * sizeof(uint8_t));
         if (mb_mapping->tab_input_bits == NULL) {
-            free(mb_mapping->tab_bits);
-            free(mb_mapping);
+            modbus_mapping_free(mb_mapping);
             return NULL;
         }
-        memset(mb_mapping->tab_input_bits, 0, nb_input_bits * sizeof(uint8_t));
+        memset(mb_mapping->tab_input_bits, 0, mb_mapping->nb_input_bits * sizeof(uint8_t));
     }
 
     /* 4X */
-    mb_mapping->nb_registers = nb_registers;
-    mb_mapping->start_registers = start_registers;
-    if (nb_registers == 0) {
-        mb_mapping->tab_registers = NULL;
-    } else {
-        mb_mapping->tab_registers = (uint16_t *) malloc(nb_registers * sizeof(uint16_t));
+    if (mb_mapping->nb_registers > 0) {
+        mb_mapping->tab_registers = (uint16_t *) malloc(mb_mapping->nb_registers * sizeof(uint16_t));
         if (mb_mapping->tab_registers == NULL) {
-            free(mb_mapping->tab_input_bits);
-            free(mb_mapping->tab_bits);
-            free(mb_mapping);
+            modbus_mapping_free(mb_mapping);
             return NULL;
         }
-        memset(mb_mapping->tab_registers, 0, nb_registers * sizeof(uint16_t));
+        memset(mb_mapping->tab_registers, 0, mb_mapping->nb_registers * sizeof(uint16_t));
     }
 
     /* 3X */
-    mb_mapping->nb_input_registers = nb_input_registers;
-    mb_mapping->start_input_registers = start_input_registers;
-    if (nb_input_registers == 0) {
-        mb_mapping->tab_input_registers = NULL;
-    } else {
+    if (mb_mapping->nb_input_registers > 0) {
         mb_mapping->tab_input_registers =
-            (uint16_t *) malloc(nb_input_registers * sizeof(uint16_t));
+            (uint16_t *) malloc(mb_mapping->nb_input_registers * sizeof(uint16_t));
         if (mb_mapping->tab_input_registers == NULL) {
-            free(mb_mapping->tab_registers);
-            free(mb_mapping->tab_input_bits);
-            free(mb_mapping->tab_bits);
-            free(mb_mapping);
+            modbus_mapping_free(mb_mapping);
             return NULL;
         }
-        memset(mb_mapping->tab_input_registers, 0, nb_input_registers * sizeof(uint16_t));
+        memset(mb_mapping->tab_input_registers, 0, mb_mapping->nb_input_registers * sizeof(uint16_t));
     }
 
     return mb_mapping;
